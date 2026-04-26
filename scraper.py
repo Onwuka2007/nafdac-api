@@ -88,6 +88,19 @@ def get_scraped_ids(conn: sqlite3.Connection) -> set[int]:
     return {r[0] for r in rows}
 
 
+def get_null_ingredient_ids(conn: sqlite3.Connection) -> list[int]:
+    rows = conn.execute(
+        "SELECT id FROM drugs WHERE active_ingredients IS NULL ORDER BY id"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def count_null_ingredients(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM drugs WHERE active_ingredients IS NULL"
+    ).fetchone()[0]
+
+
 def upsert_drug(conn: sqlite3.Connection, record: dict) -> None:
     conn.execute(
         """
@@ -127,12 +140,15 @@ H1_FIELD_MAP: dict[str, str] = {
     "registration number":          "nrn",
     "status":                       "status",
     "atc code":                     "atc_code",
+    "atc code/atcvet code":         "atc_code",   # actual label on live pages
+    "atcvet code":                  "atc_code",
     "product category":             "product_category",
     "category":                     "product_category",
     "marketing category":           "marketing_category",
     "pack size":                    "pack_size",
+    "packsize":                     "pack_size",   # actual label on live pages
     "product description":          "product_description",
-    "composition":                  "product_description",
+    "composition":                  "product_description",   # actual label on live pages
     "description":                  "product_description",
     "manufacturer name":            "manufacturer_name",
     "manufacturer":                 "manufacturer_name",
@@ -193,22 +209,23 @@ def parse_product_page(html: str, greenbook_id: int) -> dict | None:
     # First <h1> = product name
     record["product_name"] = clean(h1s[0].get_text())
 
-    # <p> tags between the first and second <h1> = ingredients, strength, dosage form
-    intro_paras: list[str] = []
+    # <span> tags between the first and second <h1> = ingredients, strength, dosage form.
+    # The live site uses <span>…</span><br><span>…</span><br>... not <p> tags here.
+    intro_spans: list[str] = []
     for tag in h1s[0].find_all_next():
         if tag.name == "h1":
             break
-        if tag.name == "p":
+        if tag.name == "span":
             t = clean(tag.get_text())
             if t:
-                intro_paras.append(t)
+                intro_spans.append(t)
 
-    if len(intro_paras) >= 1:
-        record["active_ingredients"] = intro_paras[0]
-    if len(intro_paras) >= 2:
-        record["strength"] = intro_paras[1]
-    if len(intro_paras) >= 3:
-        record["dosage_form"] = intro_paras[2]
+    if len(intro_spans) >= 1:
+        record["active_ingredients"] = intro_spans[0]
+    if len(intro_spans) >= 2:
+        record["strength"] = intro_spans[1]
+    if len(intro_spans) >= 3:
+        record["dosage_form"] = intro_spans[2]
 
     # Remaining <h1>s are field labels; the next <p> holds the value
     for h1 in h1s[1:]:
@@ -303,11 +320,12 @@ async def scrape(ids_to_fetch: list[int], conn: sqlite3.Connection) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NAFDAC Greenbook scraper")
-    parser.add_argument("--start", type=int, default=1, help="First ID to scrape (default: 1)")
-    parser.add_argument("--end",   type=int, default=15000, help="Last ID to scrape (default: 15000)")
-    parser.add_argument("--ids",   type=int, nargs="+", help="Explicit list of IDs to scrape")
-    parser.add_argument("--db",    type=str, default=DB_PATH, help="SQLite database path")
-    parser.add_argument("--force", action="store_true", help="Re-scrape IDs already in the database")
+    parser.add_argument("--start",      type=int, default=1,     help="First ID to scrape (default: 1)")
+    parser.add_argument("--end",        type=int, default=15000, help="Last ID to scrape (default: 15000)")
+    parser.add_argument("--ids",        type=int, nargs="+",     help="Explicit list of IDs to scrape")
+    parser.add_argument("--db",         type=str, default=DB_PATH, help="SQLite database path")
+    parser.add_argument("--force",      action="store_true",     help="Re-scrape IDs already in the database")
+    parser.add_argument("--fix-nulls",  action="store_true",     help="Re-scrape only records where active_ingredients IS NULL")
     return parser.parse_args()
 
 
@@ -315,6 +333,22 @@ def main() -> None:
     args = parse_args()
 
     conn = init_db(args.db)
+
+    if args.fix_nulls:
+        ids_to_fetch = get_null_ingredient_ids(conn)
+        if not ids_to_fetch:
+            print("No records with null active_ingredients — nothing to fix.")
+            conn.close()
+            return
+        nulls_before = len(ids_to_fetch)
+        print(f"Re-scraping {nulls_before} records where active_ingredients IS NULL…")
+        asyncio.run(scrape(ids_to_fetch, conn))
+        nulls_after = count_null_ingredients(conn)
+        fixed = nulls_before - nulls_after
+        print(f"Fixed: {fixed} / {nulls_before}  ({nulls_after} still null after re-scrape)")
+        conn.close()
+        return
+
     already_done = set() if args.force else get_scraped_ids(conn)
 
     if args.ids:
@@ -327,6 +361,7 @@ def main() -> None:
     if not ids_to_fetch:
         print("Nothing to scrape — all requested IDs are already in the database.")
         print("Use --force to re-scrape existing records.")
+        conn.close()
         return
 
     print(f"IDs to scrape: {len(ids_to_fetch)}  (skipping {len(already_done)} already done)")

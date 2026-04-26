@@ -2,6 +2,9 @@
 
 A REST API that scrapes the [NAFDAC Greenbook](http://greenbook.nafdac.gov.ng) and serves Nigerian drug product data.
 
+**Live API:** https://nafdac-api-production.up.railway.app  
+**Docs:** https://nafdac-api-production.up.railway.app/docs
+
 ---
 
 ## Setup
@@ -85,8 +88,10 @@ uvicorn api:app --reload --port 8000
 ```
 
 Interactive docs available at:  
-- **Swagger UI**: http://localhost:8000/docs  
-- **ReDoc**: http://localhost:8000/redoc
+- **Swagger UI**: https://nafdac-api-production.up.railway.app/docs  
+- **ReDoc**: https://nafdac-api-production.up.railway.app/redoc
+
+> For local development, replace the base URL with `http://localhost:8000`.
 
 ---
 
@@ -118,10 +123,10 @@ List products with optional filtering.
 
 ```bash
 # First 20 active OTC drugs
-curl "http://localhost:8000/drugs?status=Active&marketing_category=OTC"
+curl "https://nafdac-api-production.up.railway.app/drugs?status=Active&marketing_category=OTC"
 
 # Nigerian manufacturers, page 3
-curl "http://localhost:8000/drugs?manufacturer_country=Nigeria&page=3&limit=50"
+curl "https://nafdac-api-production.up.railway.app/drugs?manufacturer_country=Nigeria&page=3&limit=50"
 ```
 
 ---
@@ -131,7 +136,7 @@ curl "http://localhost:8000/drugs?manufacturer_country=Nigeria&page=3&limit=50"
 Retrieve a single product by its NAFDAC Registration Number.
 
 ```bash
-curl "http://localhost:8000/drugs/04-0264"
+curl "https://nafdac-api-production.up.railway.app/drugs/04-0264"
 ```
 
 ```json
@@ -165,8 +170,8 @@ curl "http://localhost:8000/drugs/04-0264"
 Full-text search across product name, active ingredients, and applicant name.
 
 ```bash
-curl "http://localhost:8000/drugs/search?q=amoxicillin&limit=5"
-curl "http://localhost:8000/drugs/search?q=paracetamol&page=2"
+curl "https://nafdac-api-production.up.railway.app/drugs/search?q=amoxicillin&limit=5"
+curl "https://nafdac-api-production.up.railway.app/drugs/search?q=paracetamol&page=2"
 ```
 
 ---
@@ -176,7 +181,7 @@ curl "http://localhost:8000/drugs/search?q=paracetamol&page=2"
 List all unique active ingredients in the database.
 
 ```bash
-curl "http://localhost:8000/ingredients"
+curl "https://nafdac-api-production.up.railway.app/ingredients"
 ```
 
 ```json
@@ -193,7 +198,7 @@ curl "http://localhost:8000/ingredients"
 All manufacturers with their product counts, sorted descending.
 
 ```bash
-curl "http://localhost:8000/manufacturers"
+curl "https://nafdac-api-production.up.railway.app/manufacturers"
 ```
 
 ```json
@@ -213,7 +218,7 @@ curl "http://localhost:8000/manufacturers"
 Summary statistics.
 
 ```bash
-curl "http://localhost:8000/stats"
+curl "https://nafdac-api-production.up.railway.app/stats"
 ```
 
 ```json
