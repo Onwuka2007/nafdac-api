@@ -167,6 +167,102 @@ def clean(text: str | None) -> str | None:
     return text if text else None
 
 
+# ---------------------------------------------------------------------------
+# Regex helpers for combined-field fallback parsing
+# ---------------------------------------------------------------------------
+
+# Unit alternation — compound units MUST appear before their substrings
+# so "mg/mL" beats "mg" in the alternation.
+_DOSE_UNIT = (
+    r'(?:mg/ml|mg/g|mg/5\s?ml|mcg/ml|g/ml|iu/ml'
+    r'|mg|g|mcg|µg|ug|ml|mL|IU|iu|mmol|mEq|%|units?)'
+)
+# One dose value: "25 mg" or "400 mg/250 mL" (N unit / N unit)
+_SINGLE_DOSE = r'\d+(?:[.,]\d+)?\s*' + _DOSE_UNIT + r'(?:\s*/\s*\d+(?:[.,]\d+)?\s*' + _DOSE_UNIT + r')?'
+# Full strength: one dose, optionally followed by "; N unit …" for combinations
+_STRENGTH_RE = re.compile(
+    r'\b' + _SINGLE_DOSE + r'(?:\s*;\s*' + _SINGLE_DOSE + r')*',
+    re.IGNORECASE,
+)
+
+# Matches dosage-form keywords; longer/more-specific alternatives are listed first
+# so finditer naturally prefers them.
+_DOSAGE_FORM_RE = re.compile(
+    r'\b(?:oral\s+solution|oral\s+suspension'
+    r'|film[- ]coated\s+tablets?|coated\s+tablets?'
+    r'|solution\s+for\s+(?:injection|infusion|inhalation)'
+    r'|hard\s+capsules?|soft\s+(?:gelatin\s+)?capsules?'
+    r'|eye\s+drops?|ear\s+drops?|nasal\s+(?:spray|drops?)'
+    r'|tablets?|capsules?|syrups?|injections?|infusions?'
+    r'|creams?|ointments?|suspensions?|solutions?'
+    r'|drops?|powders?|suppositories?|gels?|lotions?'
+    r'|aerosols?|sprays?|patches?|granules?|pellets?'
+    r'|emulsions?|elixirs?|pessaries?|pastilles?|lozenges?'
+    r'|sachets?|enemas?|implants?)\b',
+    re.IGNORECASE,
+)
+
+# Trailing pharmacopoeia codes to strip when extracting ingredient from composition
+_PHARMA_CODE_RE = re.compile(
+    r'\s+(?:BP|USP|IP|BP/USP|Ph\.Eur\.?|NF|EP|JP)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _split_combined(text: str) -> tuple[str | None, str | None, str | None]:
+    """Split a collapsed intro span into (active_ingredients, strength, dosage_form).
+
+    Handles:
+      "Spironolactone 25 mg Tablet"
+      "Telmisartan; Hydrochlorothiazide 40 mg; 12.5 mg Tablet"
+    """
+    ingredient = strength = dosage_form = None
+
+    sm = _STRENGTH_RE.search(text)
+    if sm:
+        strength = sm.group().strip()
+        ingredient = clean(text[: sm.start()])
+
+    # Use the *last* dosage-form match so multi-word forms ("Solution for injection")
+    # beat partial earlier hits ("Solution").
+    fm = None
+    for m in _DOSAGE_FORM_RE.finditer(text):
+        fm = m
+    if fm:
+        dosage_form = fm.group().strip()
+        if not ingredient:
+            ingredient = clean(text[: fm.start()])
+
+    return ingredient or None, strength or None, dosage_form or None
+
+
+def _extract_from_composition(text: str) -> tuple[str | None, str | None]:
+    """Extract (active_ingredient, strength) from a Composition/Product Description string.
+
+    e.g.  "Each film coated tablet contains: Spironolactone BP 25 mg Excipients q.s."
+          → ("Spironolactone BP", "25 mg")
+          "Each mL contains: Pentazocine 30 mg/mL"
+          → ("Pentazocine", "30 mg/mL")
+    """
+    # Drop everything up to and including "contains:" (handles both
+    # "Each tablet contains:" and "Acyclovir Ointment contains:")
+    body = re.sub(r'^.*?\bcontains\s*:\s*', '', text, flags=re.IGNORECASE).strip()
+
+    sm = _STRENGTH_RE.search(body)
+    if not sm:
+        return None, None
+
+    strength = sm.group().strip()
+    before = body[: sm.start()].strip()
+    ingredient = _PHARMA_CODE_RE.sub("", before).strip()
+
+    return ingredient or None, strength or None
+
+
+# ---------------------------------------------------------------------------
+# Main page parser
+# ---------------------------------------------------------------------------
+
 def _next_p_before_h1(h1_tag) -> str | None:
     """Return the text of the first <p> after h1_tag, stopping at the next <h1>."""
     for tag in h1_tag.find_all_next():
@@ -209,8 +305,8 @@ def parse_product_page(html: str, greenbook_id: int) -> dict | None:
     # First <h1> = product name
     record["product_name"] = clean(h1s[0].get_text())
 
-    # <span> tags between the first and second <h1> = ingredients, strength, dosage form.
-    # The live site uses <span>…</span><br><span>…</span><br>... not <p> tags here.
+    # <span> tags between first and second <h1> = ingredients, strength, dosage form.
+    # Normal layout: 3 separate spans.  Edge case: one collapsed span.
     intro_spans: list[str] = []
     for tag in h1s[0].find_all_next():
         if tag.name == "h1":
@@ -220,12 +316,19 @@ def parse_product_page(html: str, greenbook_id: int) -> dict | None:
             if t:
                 intro_spans.append(t)
 
-    if len(intro_spans) >= 1:
-        record["active_ingredients"] = intro_spans[0]
-    if len(intro_spans) >= 2:
-        record["strength"] = intro_spans[1]
     if len(intro_spans) >= 3:
-        record["dosage_form"] = intro_spans[2]
+        record["active_ingredients"] = intro_spans[0]
+        record["strength"]           = intro_spans[1]
+        record["dosage_form"]        = intro_spans[2]
+    elif len(intro_spans) == 2:
+        record["active_ingredients"] = intro_spans[0]
+        record["strength"]           = intro_spans[1]
+    elif len(intro_spans) == 1:
+        # Single combined span — try regex split
+        ing, str_, frm = _split_combined(intro_spans[0])
+        record["active_ingredients"] = ing
+        record["strength"]           = str_
+        record["dosage_form"]        = frm
 
     # Remaining <h1>s are field labels; the next <p> holds the value
     for h1 in h1s[1:]:
@@ -238,6 +341,17 @@ def parse_product_page(html: str, greenbook_id: int) -> dict | None:
         val = _next_p_before_h1(h1)
         if val:
             record[col] = val
+
+    # Composition fallback: extract ingredient + strength from the composition text
+    # when the span-based approach left them null.
+    if record["product_description"] and (
+        record["active_ingredients"] is None or record["strength"] is None
+    ):
+        ing, str_ = _extract_from_composition(record["product_description"])
+        if ing and record["active_ingredients"] is None:
+            record["active_ingredients"] = ing
+        if str_ and record["strength"] is None:
+            record["strength"] = str_
 
     if not record["product_name"]:
         return None
