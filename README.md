@@ -27,19 +27,11 @@ pip install -r requirements.txt
 
 ### 3. Configure (optional)
 
-Copy `.env` and edit as needed:
+Copy `.env.example` and edit as needed:
 
 ```bash
-cp .env .env.local
+cp .env.example .env
 ```
-
-| Variable   | Default                           | Description                  |
-|------------|-----------------------------------|------------------------------|
-| `BASE_URL` | `http://greenbook.nafdac.gov.ng`  | Greenbook base URL           |
-| `DB_PATH`  | `drugs.db`                        | SQLite database file path    |
-| `PORT`     | `8000`                            | API server port              |
-
----
 
 ## Part 1 — Scraper
 
